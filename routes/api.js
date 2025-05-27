@@ -9,10 +9,11 @@ module.exports = function (app) {
   class StockData {
     static StockDataBD = [];
 
-    constructor(stock, price, likes = 0) {
+    constructor(stock, price, likes = 0, likedIps = []) {
       this.stock = stock;
       this.price = price;
       this.likes = likes;
+      this.likedIps = likedIps;
     }
 
     save() {
@@ -32,15 +33,20 @@ module.exports = function (app) {
       StockData.StockDataBD = []
     }
 
-    addLike() {
+    addLike(ip) {
       const record = StockData.findStock(this.stock);
 
+      // 1. le titre existe déjà
       if (record) {
+        if (record.likedIps.includes(ip)) return record;   // like déjà compté
         record.likes++;
+        record.likedIps.push(ip);
         return record;
       }
 
+      // 2. nouveau titre
       this.likes = 1;
+      this.likedIps = [ip];
       return this.save();
     }
 
@@ -59,10 +65,20 @@ module.exports = function (app) {
   { stock: [ 'GOOG', 'MSFT' ], like: 'true' }
   {"stockData":[{"stock":"MSFT","price":62.30,"rel_likes":-1},{"stock":"GOOG","price":786.90,"rel_likes":1}]}
    */
+  // Normalise l’adresse IP pour éviter les variantes ::ffff:127.0.0.1 / 127.0.0.1 / ::1
+  const normalizeIp = (ip) => {
+    if (!ip) return '';
+    if (ip.startsWith('::ffff:')) return ip.slice(7);
+    if (ip === '::1') return '127.0.0.1';
+    return ip;
+  };
+
   app.route('/api/stock-prices')
     .get(async function (req, res) {
       try {
-        console.log(req.query);
+        const clientIpRaw =
+          (req.headers['x-forwarded-for'] || '').split(',').shift().trim() || req.ip;
+        const clientIp = normalizeIp(clientIpRaw);
         const { stock, like } = req.query
         // console.log(Array.isArray(stock));
 
@@ -84,8 +100,16 @@ module.exports = function (app) {
           let savedData1 = stockData1.save();
           let savedData2 = stockData2.save();
           if (like == "true") {
-            savedData1 = savedData1.addLike();
-            savedData2 = savedData2.addLike();
+            const alreadyLikedOne =
+              savedData1.likedIps.includes(clientIp) ||
+              savedData2.likedIps.includes(clientIp);
+
+            // On incrémente les deux titres **uniquement** si l’IP
+            // ne les a jamais likés auparavant.
+            if (!alreadyLikedOne) {
+              savedData1 = savedData1.addLike(clientIp);
+              savedData2 = savedData2.addLike(clientIp);
+            }
           }
           console.log(savedData1, savedData2);
 
@@ -120,7 +144,7 @@ module.exports = function (app) {
         let newStockData = new StockData(symbol, closePrice);
         newStockData.save();
         if (like == "true") {
-          newStockData = newStockData.addLike();
+          newStockData = newStockData.addLike(clientIp);
         }
         //{"stockData":{"stock":"GOOG","price":786.90,"likes":1}}
         return res.json(
@@ -133,5 +157,4 @@ module.exports = function (app) {
         return res.status(500).json({ error: 'Internal server error' });
       }
     });
-
 };
